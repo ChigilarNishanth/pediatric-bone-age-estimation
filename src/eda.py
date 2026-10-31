@@ -6,39 +6,34 @@ import seaborn as sns
 import cv2
 from pathlib import Path
 
-# Ensure repository root is in sys.path for clean imports
+# Ensure repository root is in sys.path
 repo_root = Path(__file__).resolve().parent.parent
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-# Dynamic fallback imports for CLAHE preprocessing function
-try:
-    from src.preprocess import apply_clahe_preprocessing
-except ModuleNotFoundError:
-    try:
-        from src.preprocess_rsna import apply_clahe_preprocessing
-    except ModuleNotFoundError:
-        def apply_clahe_preprocessing(image_path: str, target_size: tuple = (512, 512)):
-            img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-            if img is None:
-                raise FileNotFoundError(f"Image not found at path: {image_path}")
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            enhanced = clahe.apply(img)
-            resized = cv2.resize(enhanced, target_size, interpolation=cv2.INTER_AREA)
-            return cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
+def apply_clahe_preprocessing(image_path: str, target_size: tuple = (512, 512)):
+    """Self-contained OpenCV CLAHE preprocessing for EDA visualization."""
+    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise FileNotFoundError(f"Image not found at path: {image_path}")
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(img)
+    resized = cv2.resize(enhanced, target_size, interpolation=cv2.INTER_AREA)
+    return cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
 
 def find_metadata_and_image_dir():
-    """Locates metadata CSV and image directory across common project layouts."""
+    """Locates metadata CSV and preprocessed image directory across project locations."""
     possible_csvs = [
-        "./data/boneage-training-dataset.csv",
         "./metadata/train_metadata.csv",
-        "./data/train_metadata.csv",
-        "boneage-training-dataset.csv"
+        "./metadata/validation_metadata.csv",
+        "./data/boneage-training-dataset.csv",
+        "./data/train_metadata.csv"
     ]
     possible_img_dirs = [
+        "./preprocessing/processed_images",
+        "./preprocessing/processed_validation_images",
+        "./preprocessing",
         "./data/boneage-training-dataset/boneage-training-dataset",
-        "./data/boneage-training-dataset",
-        "./data/images",
         "./data"
     ]
 
@@ -48,7 +43,7 @@ def find_metadata_and_image_dir():
     return selected_csv, selected_img_dir
 
 def run_eda(csv_path: str = None, img_dir: str = None, output_dir: str = "docs"):
-    """Performs Exploratory Data Analysis and generates distribution & CLAHE sample artifacts."""
+    """Performs Exploratory Data Analysis and exports distribution plots."""
     os.makedirs(output_dir, exist_ok=True)
 
     if not csv_path or not os.path.exists(csv_path) or not img_dir or not os.path.exists(img_dir):
@@ -57,12 +52,11 @@ def run_eda(csv_path: str = None, img_dir: str = None, output_dir: str = "docs")
         img_dir = img_dir if (img_dir and os.path.exists(img_dir)) else auto_img_dir
 
     if not csv_path or not os.path.exists(csv_path):
-        print("⚠️ [EDA Warning] Metadata CSV not found. Please ensure RSNA dataset is downloaded inside ./data or ./metadata")
+        print(f"⚠️ [EDA Warning] Metadata CSV not found in search paths. Outputting skipped.")
         return
 
     df = pd.read_csv(csv_path)
     
-    # Standardize column name detection
     id_col = 'id' if 'id' in df.columns else ('image_id' if 'image_id' in df.columns else df.columns[0])
     age_col = 'boneage' if 'boneage' in df.columns else ('age' if 'age' in df.columns else df.columns[1])
     sex_col = 'male' if 'male' in df.columns else ('sex' if 'sex' in df.columns else None)
@@ -70,6 +64,7 @@ def run_eda(csv_path: str = None, img_dir: str = None, output_dir: str = "docs")
     print("==================================================")
     print(" RSNA PEDIATRIC BONE AGE DATASET - EDA REPORT")
     print("==================================================")
+    print(f"Metadata Source Path       : {csv_path}")
     print(f"Total Radiographs Analyzed : {len(df)}")
     print(f"Bone Age Range             : {df[age_col].min()} to {df[age_col].max()} months")
     print(f"Mean Bone Age ± Std        : {df[age_col].mean():.2f} ± {df[age_col].std():.2f} months")
@@ -79,7 +74,7 @@ def run_eda(csv_path: str = None, img_dir: str = None, output_dir: str = "docs")
         print(f"Biological Sex Ratio       : {male_pct:.1f}% Male / {100 - male_pct:.1f}% Female")
     print("==================================================\n")
 
-    # 1. Plot & Save Age Distribution Histogram + Biological Sex Pie Chart
+    # 1. Plot Age Distribution & Sex Ratio
     fig, axes = plt.subplots(1, 2 if sex_col else 1, figsize=(12, 5))
     
     ax_hist = axes[0] if sex_col else axes
@@ -101,7 +96,7 @@ def run_eda(csv_path: str = None, img_dir: str = None, output_dir: str = "docs")
     plt.close()
     print(f" Saved distribution plot to: {dist_plot_path}")
 
-    # 2. Plot & Save CLAHE Visual Comparison Sample
+    # 2. Save CLAHE Sample Comparison Plot if image directory exists
     if img_dir and os.path.exists(img_dir):
         sample_row = df.iloc[0]
         sample_id = sample_row[id_col]
@@ -121,12 +116,12 @@ def run_eda(csv_path: str = None, img_dir: str = None, output_dir: str = "docs")
             plt.figure(figsize=(10, 5))
             plt.subplot(1, 2, 1)
             plt.imshow(raw_img, cmap='gray')
-            plt.title(f"Raw PA Radiograph (ID: {sample_id})", fontsize=11, fontweight='bold')
+            plt.title(f"PA Radiograph (ID: {sample_id})", fontsize=11, fontweight='bold')
             plt.axis('off')
 
             plt.subplot(1, 2, 2)
             plt.imshow(clahe_img)
-            plt.title("OpenCV CLAHE Enhanced (512x512, Clip: 2.0, Tile: 8x8)", fontsize=11, fontweight='bold')
+            plt.title("OpenCV CLAHE Enhanced (512x512)", fontsize=11, fontweight='bold')
             plt.axis('off')
 
             plt.tight_layout()
