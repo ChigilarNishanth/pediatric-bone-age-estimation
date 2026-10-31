@@ -29,11 +29,10 @@ DATA_ROOT = Path(os.environ.get("RSNA_DATA_ROOT", DEFAULT_PREPROCESSING_DIR))
 CHECKPOINT_DIR = BASE_DIR / "checkpoints"
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
-# FULL TRAINING CONFIGURATION
 BATCH_SIZE = 32
 EPOCHS = 10
 LEARNING_RATE = 1e-4
-NUM_WORKERS = 0  # Prevents Colab IPC deadlock
+NUM_WORKERS = 0  
 RANDOM_SEED = 42
 
 random.seed(RANDOM_SEED)
@@ -74,15 +73,10 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch):
 
         running_loss += loss.item() * images.size(0)
 
-        # Batch progress print every 20 batches (~20 updates per epoch)
-        if (batch_idx + 1) % 20 == 0 or (batch_idx + 1) == total_batches:
+        # Print every 100 batches to keep browser DOM lightweight
+        if (batch_idx + 1) % 100 == 0 or (batch_idx + 1) == total_batches:
             current_mae = loss.item()
-            processed_samples = (batch_idx + 1) * BATCH_SIZE
-            total_samples = len(dataloader.dataset)
-            if processed_samples > total_samples:
-                processed_samples = total_samples
-            
-            print(f"  [Epoch {epoch:02d}/{EPOCHS:02d}] Batch {batch_idx + 1:03d}/{total_batches:03d} ({processed_samples}/{total_samples} samples) | Loss: {current_mae:.2f} mos")
+            print(f"  [Epoch {epoch:02d}/{EPOCHS:02d}] Batch {batch_idx + 1:03d}/{total_batches:03d} | Current Batch Loss: {current_mae:.2f} mos")
 
     return running_loss / len(dataloader.dataset)
 
@@ -133,11 +127,10 @@ def run_training_pipeline():
     if not DATA_ROOT.is_dir():
         raise FileNotFoundError(f"Preprocessed image directory not found at '{DATA_ROOT}'")
 
-    print("\nLoading full datasets...")
     train_dataset = RSNABoneAgeDataset(metadata_csv=TRAIN_METADATA, transform=transform, data_root=DATA_ROOT)
     val_dataset = RSNABoneAgeDataset(metadata_csv=VAL_METADATA, transform=transform, data_root=DATA_ROOT)
 
-    print(f"Train samples       : {len(train_dataset)}")
+    print(f"\nTrain samples       : {len(train_dataset)}")
     print(f"Validation samples  : {len(val_dataset)}")
 
     train_loader = DataLoader(
@@ -147,7 +140,6 @@ def run_training_pipeline():
         val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=torch.cuda.is_available()
     )
 
-    print("\nInitializing ResNet-50 baseline model...")
     model = ResNet50Baseline(pretrained=True).to(device)
     criterion = nn.L1Loss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
