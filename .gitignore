@@ -1,11 +1,36 @@
-﻿# IDE & System Files
+﻿
+# IDE & System Files
 .vscode/
 .idea/
 .DS_Store
 
-# Allow project metadata CSV files
-!metadata/train_metadata.csv
-!metadata/validation_metadata.csv
 # Python cache
 **/__pycache__/
 *.pyc
+*.pyo
+
+# Model checkpoints and generated weights
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+
+# Training outputs and generated predictions
+results/
+runs/
+outputs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Allow project metadata CSV files
+!metadata/
+!metadata/train_metadata.csv
+!metadata/validation_metadata.csv
