@@ -29,11 +29,11 @@ DATA_ROOT = Path(os.environ.get("RSNA_DATA_ROOT", DEFAULT_PREPROCESSING_DIR))
 CHECKPOINT_DIR = BASE_DIR / "checkpoints"
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
-# FULL TRAINING CONFIGURATION (COLAB SAFE)
+# FULL TRAINING CONFIGURATION
 BATCH_SIZE = 32
 EPOCHS = 10
 LEARNING_RATE = 1e-4
-NUM_WORKERS = 0  # Prevents Colab multiprocessing deadlock
+NUM_WORKERS = 0  # Prevents Colab IPC deadlock
 RANDOM_SEED = 42
 
 random.seed(RANDOM_SEED)
@@ -74,10 +74,15 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch):
 
         running_loss += loss.item() * images.size(0)
 
-        # Batch progress logger every 50 batches
-        if (batch_idx + 1) % 50 == 0 or (batch_idx + 1) == total_batches:
+        # Batch progress print every 20 batches (~20 updates per epoch)
+        if (batch_idx + 1) % 20 == 0 or (batch_idx + 1) == total_batches:
             current_mae = loss.item()
-            print(f"  Epoch [{epoch:02d}/{EPOCHS:02d}] | Batch [{batch_idx + 1:03d}/{total_batches:03d}] | Current Batch MAE: {current_mae:.2f} mos")
+            processed_samples = (batch_idx + 1) * BATCH_SIZE
+            total_samples = len(dataloader.dataset)
+            if processed_samples > total_samples:
+                processed_samples = total_samples
+            
+            print(f"  [Epoch {epoch:02d}/{EPOCHS:02d}] Batch {batch_idx + 1:03d}/{total_batches:03d} ({processed_samples}/{total_samples} samples) | Loss: {current_mae:.2f} mos")
 
     return running_loss / len(dataloader.dataset)
 
@@ -111,16 +116,16 @@ def evaluate(model, dataloader, criterion, device):
 def run_training_pipeline():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print("=" * 60)
+    print("=" * 65)
     print(" PEDIATRIC BONE AGE - RESNET-50 FULL TRAINING (REVIEW 2)")
-    print("=" * 60)
+    print("=" * 65)
     print(f"Device               : {device}")
     print(f"Batch Size           : {BATCH_SIZE}")
     print(f"Epochs               : {EPOCHS}")
     print(f"Learning Rate        : {LEARNING_RATE}")
     print(f"Metadata Path        : {TRAIN_METADATA}")
     print(f"Preprocessing Root   : {DATA_ROOT}")
-    print("=" * 60)
+    print("=" * 65)
 
     if not TRAIN_METADATA.is_file() or not VAL_METADATA.is_file():
         raise FileNotFoundError(f"Metadata CSVs missing in {BASE_DIR / 'metadata'}")
@@ -152,14 +157,14 @@ def run_training_pipeline():
 
     print("\nStarting Full Training Execution...")
     print("Target Metric: Validation MAE < 12.0 Months")
-    print("-" * 60)
+    print("-" * 65)
 
     for epoch in range(1, EPOCHS + 1):
-        print(f"\n>>> Starting Epoch [{epoch:02d}/{EPOCHS:02d}]")
+        print(f"\n>>> Epoch [{epoch:02d}/{EPOCHS:02d}] Execution Started")
         train_mae = train_one_epoch(model, train_loader, criterion, optimizer, device, epoch)
         val_loss, val_mae = evaluate(model, val_loader, criterion, device)
 
-        print(f"Epoch [{epoch:02d}/{EPOCHS:02d}] Summary -> Train MAE: {train_mae:.2f} mos | Val Loss: {val_loss:.4f} | Val MAE: {val_mae:.2f} mos")
+        print(f"--> Epoch [{epoch:02d}/{EPOCHS:02d}] Complete | Train MAE: {train_mae:.2f} mos | Val Loss: {val_loss:.4f} | Val MAE: {val_mae:.2f} mos")
 
         if val_mae < best_val_mae:
             best_val_mae = val_mae
@@ -170,13 +175,13 @@ def run_training_pipeline():
                 "validation_mae": val_mae,
                 "validation_loss": val_loss
             }, best_checkpoint_path)
-            print(f"   --> Best model checkpoint saved to {best_checkpoint_path.name} (Val MAE: {val_mae:.2f} mos)")
+            print(f"    ⭐ Best model checkpoint updated -> {best_checkpoint_path.name} (Val MAE: {val_mae:.2f} mos)")
 
-    print("-" * 60)
+    print("-" * 65)
     print("FULL TRAINING COMPLETED SUCCESSFULLY")
     print(f"Best Validation MAE Achieved : {best_val_mae:.2f} months")
     print(f"Saved Checkpoint Path       : {best_checkpoint_path}")
-    print("=" * 60)
+    print("=" * 65)
 
     return best_val_mae
 
