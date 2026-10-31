@@ -29,10 +29,11 @@ DATA_ROOT = Path(os.environ.get("RSNA_DATA_ROOT", DEFAULT_PREPROCESSING_DIR))
 CHECKPOINT_DIR = BASE_DIR / "checkpoints"
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
-BATCH_SIZE = 32
+# OPTIMIZED HIGH-SPEED TRAINING CONFIGURATION
+BATCH_SIZE = 64        # Doubled batch size for full T4 VRAM utilization
 EPOCHS = 10
 LEARNING_RATE = 1e-4
-NUM_WORKERS = 0  # Prevents IPC thread deadlocks in Colab
+NUM_WORKERS = 2        # Parallel CPU image decoding
 RANDOM_SEED = 42
 
 random.seed(RANDOM_SEED)
@@ -49,32 +50,37 @@ transform = transforms.Compose([
     )
 ])
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch):
+def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epoch):
     model.train()
     running_loss = 0.0
     total_batches = len(dataloader)
 
     for batch_idx, batch in enumerate(dataloader):
         if isinstance(batch, dict):
-            images = batch["image"].to(device)
-            targets = batch["boneage"].to(device, dtype=torch.float32)
+            images = batch["image"].to(device, non_blocking=True)
+            targets = batch["boneage"].to(device, dtype=torch.float32, non_blocking=True)
         else:
             images, targets = batch
-            images = images.to(device)
-            targets = targets.to(device, dtype=torch.float32)
+            images = images.to(device, non_blocking=True)
+            targets = targets.to(device, dtype=torch.float32, non_blocking=True)
 
         optimizer.zero_grad()
-        outputs = model(images).reshape(-1)
-        targets = targets.reshape(-1)
 
-        loss = criterion(outputs, targets)
-        loss.backward()
-        optimizer.step()
+        # Automatic Mixed Precision (AMP) Forward Pass
+        with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
+            outputs = model(images).reshape(-1)
+            targets = targets.reshape(-1)
+            loss = criterion(outputs, targets)
+
+        # Scaled Backward Pass for T4 Tensor Cores
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         running_loss += loss.item() * images.size(0)
 
-        # Lightweight logging every 100 batches to keep Chrome DOM smooth
-        if (batch_idx + 1) % 100 == 0 or (batch_idx + 1) == total_batches:
+        # Console update every 50 batches
+        if (batch_idx + 1) % 50 == 0 or (batch_idx + 1) == total_batches:
             current_mae = loss.item()
             print(f"  [Epoch {epoch:02d}/{EPOCHS:02d}] Batch {batch_idx + 1:03d}/{total_batches:03d} | Current Batch Loss: {current_mae:.2f} mos")
 
@@ -88,17 +94,18 @@ def evaluate(model, dataloader, criterion, device):
     with torch.no_grad():
         for batch in dataloader:
             if isinstance(batch, dict):
-                images = batch["image"].to(device)
-                targets = batch["boneage"].to(device, dtype=torch.float32)
+                images = batch["image"].to(device, non_blocking=True)
+                targets = batch["boneage"].to(device, dtype=torch.float32, non_blocking=True)
             else:
                 images, targets = batch
-                images = images.to(device)
-                targets = targets.to(device, dtype=torch.float32)
+                images = images.to(device, non_blocking=True)
+                targets = targets.to(device, dtype=torch.float32, non_blocking=True)
 
-            outputs = model(images).reshape(-1)
-            targets = targets.reshape(-1)
+            with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
+                outputs = model(images).reshape(-1)
+                targets = targets.reshape(-1)
+                loss = criterion(outputs, targets)
 
-            loss = criterion(outputs, targets)
             running_loss += loss.item() * images.size(0)
             total_absolute_error += torch.abs(outputs - targets).sum().item()
 
@@ -111,13 +118,13 @@ def run_training_pipeline():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print("=" * 65)
-    print(" PEDIATRIC BONE AGE - RESNET-50 FULL TRAINING (REVIEW 2)")
+    print(" PEDIATRIC BONE AGE - RESNET-50 ACCELERATED TRAINING (REVIEW 2)")
     print("=" * 65)
     print(f"Device               : {device}")
     print(f"Batch Size           : {BATCH_SIZE}")
     print(f"Epochs               : {EPOCHS}")
-    print(f"Learning Rate        : {LEARNING_RATE}")
-    print(f"Metadata Path        : {TRAIN_METADATA}")
+    print(f"Mixed Precision (AMP): Enabled (T4 Tensor Cores)")
+    print(f"Num Workers          : {NUM_WORKERS}")
     print(f"Preprocessing Root   : {DATA_ROOT}")
     print("=" * 65)
 
@@ -134,26 +141,37 @@ def run_training_pipeline():
     print(f"Validation samples  : {len(val_dataset)}")
 
     train_loader = DataLoader(
-        train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=torch.cuda.is_available()
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=NUM_WORKERS,
+        pin_memory=torch.cuda.is_available(),
+        persistent_workers=True if NUM_WORKERS > 0 else False
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=torch.cuda.is_available()
+        val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=NUM_WORKERS,
+        pin_memory=torch.cuda.is_available(),
+        persistent_workers=True if NUM_WORKERS > 0 else False
     )
 
     model = ResNet50Baseline(pretrained=True).to(device)
     criterion = nn.L1Loss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
+    scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
 
     best_val_mae = float("inf")
     best_checkpoint_path = CHECKPOINT_DIR / "resnet50_baseline_best.pth"
 
-    print("\nStarting Full Training Execution...")
+    print("\nStarting Accelerated Training Execution...")
     print("Target Metric: Validation MAE < 12.0 Months")
     print("-" * 65)
 
     for epoch in range(1, EPOCHS + 1):
         print(f"\n>>> Epoch [{epoch:02d}/{EPOCHS:02d}] Execution Started")
-        train_mae = train_one_epoch(model, train_loader, criterion, optimizer, device, epoch)
+        train_mae = train_one_epoch(model, train_loader, criterion, optimizer, scaler, device, epoch)
         val_loss, val_mae = evaluate(model, val_loader, criterion, device)
 
         print(f"--> Epoch [{epoch:02d}/{EPOCHS:02d}] Complete | Train MAE: {train_mae:.2f} mos | Val Loss: {val_loss:.4f} | Val MAE: {val_mae:.2f} mos")
@@ -170,7 +188,7 @@ def run_training_pipeline():
             print(f"    ⭐ Best model checkpoint updated -> {best_checkpoint_path.name} (Val MAE: {val_mae:.2f} mos)")
 
     print("-" * 65)
-    print("FULL TRAINING COMPLETED SUCCESSFULLY")
+    print("ACCELERATED TRAINING COMPLETED SUCCESSFULLY")
     print(f"Best Validation MAE Achieved : {best_val_mae:.2f} months")
     print(f"Saved Checkpoint Path       : {best_checkpoint_path}")
     print("=" * 65)
