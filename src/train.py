@@ -29,11 +29,11 @@ DATA_ROOT = Path(os.environ.get("RSNA_DATA_ROOT", DEFAULT_PREPROCESSING_DIR))
 CHECKPOINT_DIR = BASE_DIR / "checkpoints"
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
-# FULL TRAINING CONFIGURATION FOR REVIEW 2
+# FULL TRAINING CONFIGURATION (COLAB SAFE)
 BATCH_SIZE = 32
 EPOCHS = 10
 LEARNING_RATE = 1e-4
-NUM_WORKERS = 2
+NUM_WORKERS = 0  # Prevents Colab multiprocessing deadlock
 RANDOM_SEED = 42
 
 random.seed(RANDOM_SEED)
@@ -50,11 +50,12 @@ transform = transforms.Compose([
     )
 ])
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device):
+def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch):
     model.train()
     running_loss = 0.0
+    total_batches = len(dataloader)
 
-    for batch in dataloader:
+    for batch_idx, batch in enumerate(dataloader):
         if isinstance(batch, dict):
             images = batch["image"].to(device)
             targets = batch["boneage"].to(device, dtype=torch.float32)
@@ -72,6 +73,11 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
         optimizer.step()
 
         running_loss += loss.item() * images.size(0)
+
+        # Batch progress logger every 50 batches
+        if (batch_idx + 1) % 50 == 0 or (batch_idx + 1) == total_batches:
+            current_mae = loss.item()
+            print(f"  Epoch [{epoch:02d}/{EPOCHS:02d}] | Batch [{batch_idx + 1:03d}/{total_batches:03d}] | Current Batch MAE: {current_mae:.2f} mos")
 
     return running_loss / len(dataloader.dataset)
 
@@ -148,16 +154,17 @@ def run_training_pipeline():
     print("Target Metric: Validation MAE < 12.0 Months")
     print("-" * 60)
 
-    for epoch in range(EPOCHS):
-        train_mae = train_one_epoch(model, train_loader, criterion, optimizer, device)
+    for epoch in range(1, EPOCHS + 1):
+        print(f"\n>>> Starting Epoch [{epoch:02d}/{EPOCHS:02d}]")
+        train_mae = train_one_epoch(model, train_loader, criterion, optimizer, device, epoch)
         val_loss, val_mae = evaluate(model, val_loader, criterion, device)
 
-        print(f"Epoch [{epoch + 1:02d}/{EPOCHS:02d}] | Train MAE: {train_mae:.2f} mos | Val Loss: {val_loss:.4f} | Val MAE: {val_mae:.2f} mos")
+        print(f"Epoch [{epoch:02d}/{EPOCHS:02d}] Summary -> Train MAE: {train_mae:.2f} mos | Val Loss: {val_loss:.4f} | Val MAE: {val_mae:.2f} mos")
 
         if val_mae < best_val_mae:
             best_val_mae = val_mae
             torch.save({
-                "epoch": epoch + 1,
+                "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "validation_mae": val_mae,
