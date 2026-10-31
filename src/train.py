@@ -1,231 +1,256 @@
 ﻿import os
 import random
-import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
+from tqdm import tqdm
 
-# Ensure src directory is in sys.path
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-try:
-    from rsna_dataset import RSNABoneAgeDataset
-    from baseline_resnet50 import ResNet50Baseline
-except ModuleNotFoundError:
-    from src.rsna_dataset import RSNABoneAgeDataset
-    from src.baseline_resnet50 import ResNet50Baseline
+from baseline_resnet50 import ResNet50Baseline
+from rsna_dataset import RSNABoneAgeDataset
 
 
-# ==========================================================
-# 1. CONFIGURATION
-# ==========================================================
+# --------------------------------------------------
+# CONFIGURATION
+# --------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 
-TRAIN_METADATA = BASE_DIR / "metadata" / "train_metadata.csv"
-VAL_METADATA = BASE_DIR / "metadata" / "validation_metadata.csv"
+TRAIN_CSV = BASE_DIR / "metadata" / "train_metadata.csv"
+VAL_CSV = BASE_DIR / "metadata" / "validation_metadata.csv"
 
-# Check local Windows path vs Colab/Data fallback
-default_local_path = r"D:\Pediatric_Bone_Age\preprocessing"
-fallback_colab_path = BASE_DIR / "data"
+DATA_ROOT = Path(
+    os.environ.get("RSNA_DATA_ROOT", r"D:\Pediatric_Bone_Age\preprocessing")
+)
 
-if os.path.exists(default_local_path):
-    default_data_root = default_local_path
-else:
-    default_data_root = str(fallback_colab_path)
+OUTPUT_DIR = BASE_DIR / "checkpoints"
+OUTPUT_DIR.mkdir(exist_ok=True)
 
-DATA_ROOT = Path(os.environ.get("RSNA_DATA_ROOT", default_data_root))
+BATCH_SIZE = 4
+EPOCHS = 2
+LEARNING_RATE = 0.0001
 
-CHECKPOINT_DIR = BASE_DIR / "checkpoints"
-CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+# Smoke test: use a small subset to verify the complete pipeline.
+# Set to None later to train on the full dataset.
+TRAIN_LIMIT = 512
+VAL_LIMIT = 128
 
-BATCH_SIZE = 8
-EPOCHS = 10
-LEARNING_RATE = 1e-4
+IMAGE_SIZE = 224
 NUM_WORKERS = 0
-RANDOM_SEED = 42
+SEED = 42
 
 
-# ==========================================================
-# 2. REPRODUCIBILITY
-# ==========================================================
+# --------------------------------------------------
+# REPRODUCIBILITY
+# --------------------------------------------------
 
-random.seed(RANDOM_SEED)
-np.random.seed(RANDOM_SEED)
-torch.manual_seed(RANDOM_SEED)
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(RANDOM_SEED)
-
-
-# ==========================================================
-# 3. DEVICE & SETUP
-# ==========================================================
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-print("=" * 55)
-print("PEDIATRIC BONE AGE - RESNET50 BASELINE")
-print("=" * 55)
-print("Device:", device)
-print("Batch size:", BATCH_SIZE)
-print("Epochs:", EPOCHS)
-print("Learning rate:", LEARNING_RATE)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
-# ==========================================================
-# 4. IMAGE TRANSFORMATIONS
-# ==========================================================
+# --------------------------------------------------
+# DATA
+# --------------------------------------------------
 
-transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
+def create_dataloaders():
+    transform = transforms.Compose([
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
+
+    train_dataset = RSNABoneAgeDataset(
+        metadata_csv=TRAIN_CSV,
+        transform=transform,
+        data_root=DATA_ROOT
     )
-])
+
+    val_dataset = RSNABoneAgeDataset(
+        metadata_csv=VAL_CSV,
+        transform=transform,
+        data_root=DATA_ROOT
+    )
+
+    if TRAIN_LIMIT is not None:
+        train_dataset = Subset(
+            train_dataset,
+            range(min(TRAIN_LIMIT, len(train_dataset)))
+        )
+
+    if VAL_LIMIT is not None:
+        val_dataset = Subset(
+            val_dataset,
+            range(min(VAL_LIMIT, len(val_dataset)))
+        )
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=NUM_WORKERS,
+        pin_memory=torch.cuda.is_available()
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=NUM_WORKERS,
+        pin_memory=torch.cuda.is_available()
+    )
+
+    print(f"Training samples: {len(train_dataset)}")
+    print(f"Validation samples: {len(val_dataset)}")
+
+    return train_loader, val_loader
 
 
-# ==========================================================
-# 5. TRAIN ONE EPOCH
-# ==========================================================
+# --------------------------------------------------
+# TRAINING
+# --------------------------------------------------
 
-def train_one_epoch(
-    model: nn.Module,
-    dataloader: DataLoader,
-    criterion: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    device: torch.device
-) -> float:
-
+def train_one_epoch(model, loader, criterion, optimizer, device):
     model.train()
-    running_loss = 0.0
+    total_loss = 0.0
 
-    for batch in dataloader:
-        if isinstance(batch, dict):
-            images = batch["image"].to(device)
-            targets = batch["boneage"].to(device, dtype=torch.float32)
-        else:
-            images, targets = batch
-            images = images.to(device)
-            targets = targets.to(device, dtype=torch.float32)
+    progress = tqdm(loader, desc="Training", leave=False)
+
+    for images, targets in progress:
+        images = images.to(device)
+        targets = targets.to(device, dtype=torch.float32).view(-1)
 
         optimizer.zero_grad()
-        outputs = model(images).reshape(-1)
-        targets = targets.reshape(-1)
 
-        loss = criterion(outputs, targets)
+        predictions = model(images).view(-1)
+        loss = criterion(predictions, targets)
+
         loss.backward()
         optimizer.step()
 
-        running_loss += loss.item() * images.size(0)
+        total_loss += loss.item() * images.size(0)
+        progress.set_postfix(loss=f"{loss.item():.2f}")
 
-    return running_loss / len(dataloader.dataset)
+    return total_loss / len(loader.dataset)
 
 
-# ==========================================================
-# 6. VALIDATION / EVALUATION
-# ==========================================================
+# --------------------------------------------------
+# VALIDATION
+# --------------------------------------------------
 
-def evaluate(
-    model: nn.Module,
-    dataloader: DataLoader,
-    criterion: nn.Module,
-    device: torch.device
-):
-
+def evaluate(model, loader, criterion, device):
     model.eval()
-    running_loss = 0.0
-    total_absolute_error = 0.0
+    total_error = 0.0
 
     with torch.no_grad():
-        for batch in dataloader:
-            if isinstance(batch, dict):
-                images = batch["image"].to(device)
-                targets = batch["boneage"].to(device, dtype=torch.float32)
-            else:
-                images, targets = batch
-                images = images.to(device)
-                targets = targets.to(device, dtype=torch.float32)
+        progress = tqdm(loader, desc="Validation", leave=False)
 
-            outputs = model(images).reshape(-1)
-            targets = targets.reshape(-1)
+        for images, targets in progress:
+            images = images.to(device)
+            targets = targets.to(device, dtype=torch.float32).view(-1)
 
-            loss = criterion(outputs, targets)
-            running_loss += loss.item() * images.size(0)
-            total_absolute_error += torch.abs(outputs - targets).sum().item()
+            predictions = model(images).view(-1)
+            loss = criterion(predictions, targets)
 
-    validation_loss = running_loss / len(dataloader.dataset)
-    validation_mae = total_absolute_error / len(dataloader.dataset)
+            total_error += loss.item() * images.size(0)
+            progress.set_postfix(mae=f"{loss.item():.2f}")
 
-    return validation_loss, validation_mae
+    return total_error / len(loader.dataset)
 
 
-# ==========================================================
-# 7. COMPLETE TRAINING PIPELINE
-# ==========================================================
+# --------------------------------------------------
+# MAIN PIPELINE
+# --------------------------------------------------
 
 def run_training_pipeline():
+    set_seed(SEED)
 
-    if not TRAIN_METADATA.is_file() or not VAL_METADATA.is_file():
-        raise FileNotFoundError(f"Metadata CSV files missing in {BASE_DIR / 'metadata'}")
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
 
-    if not DATA_ROOT.is_dir():
-        raise FileNotFoundError(f"Processed image directory not found: {DATA_ROOT}")
+    print("=" * 55)
+    print("PEDIATRIC BONE AGE - RESNET50 BASELINE")
+    print("=" * 55)
+    print(f"Device: {device}")
+    print(f"Batch size: {BATCH_SIZE}")
+    print(f"Epochs: {EPOCHS}")
+    print(f"Image size: {IMAGE_SIZE} x {IMAGE_SIZE}")
+    print(f"Learning rate: {LEARNING_RATE}")
+    print(f"Training limit: {TRAIN_LIMIT}")
+    print(f"Validation limit: {VAL_LIMIT}")
+
+    if device.type == "cpu":
+        print("\nCPU mode: running a small smoke test.")
+    else:
+        print("\nGPU detected: CUDA training enabled.")
 
     print("\nLoading datasets...")
-    train_dataset = RSNABoneAgeDataset(metadata_csv=TRAIN_METADATA, transform=transform, data_root=DATA_ROOT)
-    val_dataset = RSNABoneAgeDataset(metadata_csv=VAL_METADATA, transform=transform, data_root=DATA_ROOT)
+    train_loader, val_loader = create_dataloaders()
 
-    print("Training samples:", len(train_dataset))
-    print("Validation samples:", len(val_dataset))
-
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=torch.cuda.is_available())
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=torch.cuda.is_available())
-
-    print("\nInitializing ResNet-50 model...")
+    print("\nInitializing ResNet-50...")
     model = ResNet50Baseline(pretrained=True).to(device)
+
     criterion = nn.L1Loss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=LEARNING_RATE
+    )
 
     best_val_mae = float("inf")
-    checkpoint_path = CHECKPOINT_DIR / "resnet50_baseline_best.pth"
 
     print("\nStarting training...")
-    print("Target baseline MAE: below 12.0 months")
     print("-" * 55)
 
     for epoch in range(EPOCHS):
-        train_mae = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        val_loss, val_mae = evaluate(model, val_loader, criterion, device)
+        print(f"\nEpoch {epoch + 1}/{EPOCHS}")
 
-        print(f"\nEpoch [{epoch + 1:02d}/{EPOCHS:02d}]")
-        print(f"Training MAE: {train_mae:.2f} months")
-        print(f"Validation Loss: {val_loss:.4f}")
+        train_loss = train_one_epoch(
+            model, train_loader, criterion, optimizer, device
+        )
+
+        val_mae = evaluate(
+            model, val_loader, criterion, device
+        )
+
+        print(f"Training MAE:   {train_loss:.2f} months")
         print(f"Validation MAE: {val_mae:.2f} months")
 
         if val_mae < best_val_mae:
             best_val_mae = val_mae
+
+            checkpoint_path = OUTPUT_DIR / "best_resnet50.pth"
+
             torch.save({
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "validation_mae": val_mae,
-                "validation_loss": val_loss
+                "image_size": IMAGE_SIZE
             }, checkpoint_path)
-            print("--> Best model checkpoint saved!")
+
+            print(f"Best checkpoint saved: {checkpoint_path}")
 
     print("\n" + "=" * 55)
-    print("TRAINING COMPLETED")
+    print("TRAINING FINISHED")
+    print(f"Best validation MAE: {best_val_mae:.2f} months")
     print("=" * 55)
-    print(f"Best Validation MAE: {best_val_mae:.2f} months")
-    print("Checkpoint:", checkpoint_path)
 
-    return best_val_mae
+    if TRAIN_LIMIT is not None:
+        print(
+            "\nNOTE: This was a smoke test using a subset. "
+            "Do not report this MAE as the final full-dataset result."
+        )
 
 
 if __name__ == "__main__":
