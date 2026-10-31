@@ -1,9 +1,14 @@
 ﻿import os
+import sys
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import cv2
-from preprocess import apply_clahe_preprocessing
+
+# Ensure project root and src directory are in sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.preprocess import apply_clahe_preprocessing
 
 def run_eda(csv_path: str, img_dir: str, output_dir: str = "docs"):
     os.makedirs(output_dir, exist_ok=True)
@@ -58,7 +63,6 @@ def run_eda(csv_path: str, img_dir: str, output_dir: str = "docs"):
         print(f"Saved CLAHE sample comparison to {output_dir}/clahe_comparison_sample.png")
 
 if __name__ == "__main__":
-    # Example execution paths
     csv_path = "./data/boneage-training-dataset.csv"
     img_dir = "./data/boneage-training-dataset/boneage-training-dataset"
     if os.path.exists(csv_path):
