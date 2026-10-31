@@ -32,7 +32,7 @@ CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 BATCH_SIZE = 32
 EPOCHS = 10
 LEARNING_RATE = 1e-4
-NUM_WORKERS = 0  
+NUM_WORKERS = 0  # Prevents IPC thread deadlocks in Colab
 RANDOM_SEED = 42
 
 random.seed(RANDOM_SEED)
@@ -73,7 +73,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch):
 
         running_loss += loss.item() * images.size(0)
 
-        # Print every 100 batches to keep browser DOM lightweight
+        # Lightweight logging every 100 batches to keep Chrome DOM smooth
         if (batch_idx + 1) % 100 == 0 or (batch_idx + 1) == total_batches:
             current_mae = loss.item()
             print(f"  [Epoch {epoch:02d}/{EPOCHS:02d}] Batch {batch_idx + 1:03d}/{total_batches:03d} | Current Batch Loss: {current_mae:.2f} mos")
