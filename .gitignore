@@ -1,25 +1,11 @@
-﻿# Python & Environments
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.env
-
-# Datasets & Heavy Files
-data/
-*.png
-*.jpg
-*.jpeg
-*.csv
-*.zip
-
-# PyTorch Checkpoints & Models
-checkpoints/
-*.pth
-*.onnx
-*.pt
-
-# IDE & System Files
+﻿# IDE & System Files
 .vscode/
 .idea/
 .DS_Store
+
+# Allow project metadata CSV files
+!metadata/train_metadata.csv
+!metadata/validation_metadata.csv
+# Python cache
+**/__pycache__/
+*.pyc
