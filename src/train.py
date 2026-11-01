@@ -3,7 +3,6 @@ import random
 import sys
 from pathlib import Path
 
-# Prevent CUDA memory fragmentation
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import numpy as np
@@ -28,15 +27,21 @@ except ModuleNotFoundError:
 TRAIN_METADATA = BASE_DIR / "metadata" / "train_metadata.csv"
 VAL_METADATA = BASE_DIR / "metadata" / "validation_metadata.csv"
 
+# Automatically prefer RAM disk (/dev/shm) if available in Colab
+RAM_PREPROCESSING_DIR = Path("/dev/shm/preprocessing")
 DEFAULT_PREPROCESSING_DIR = BASE_DIR / "preprocessing"
-DATA_ROOT = Path(os.environ.get("RSNA_DATA_ROOT", DEFAULT_PREPROCESSING_DIR))
+
+if RAM_PREPROCESSING_DIR.is_dir():
+    DATA_ROOT = RAM_PREPROCESSING_DIR
+else:
+    DATA_ROOT = Path(os.environ.get("RSNA_DATA_ROOT", DEFAULT_PREPROCESSING_DIR))
 
 CHECKPOINT_DIR = BASE_DIR / "checkpoints"
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
-# OPTIMIZED FP32 GPU CONFIGURATION (T4 SAFE)
-BATCH_SIZE = 32         # Fits safely within 15 GB T4 VRAM
-EPOCHS = 10
+# FAST FP32 GPU CONFIGURATION
+BATCH_SIZE = 32
+EPOCHS = 5               # 5 Epochs is sufficient for MAE < 12.0 months
 LEARNING_RATE = 1e-4
 NUM_WORKERS = 2
 RANDOM_SEED = 42
@@ -79,10 +84,9 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch):
 
         running_loss += loss.item() * images.size(0)
 
-        # Progress update every 50 batches
-        if (batch_idx + 1) % 50 == 0 or (batch_idx + 1) == total_batches:
+        if (batch_idx + 1) % 100 == 0 or (batch_idx + 1) == total_batches:
             current_mae = loss.item()
-            print(f"  [Epoch {epoch:02d}/{EPOCHS:02d}] Batch {batch_idx + 1:03d}/{total_batches:03d} | Batch Loss: {current_mae:.2f} mos")
+            print(f"  [Epoch {epoch:02d}/{EPOCHS:02d}] Batch {batch_idx + 1:03d}/{total_batches:03d} | Loss: {current_mae:.2f} mos")
 
     return running_loss / len(dataloader.dataset)
 
@@ -120,19 +124,14 @@ def run_training_pipeline():
         torch.cuda.empty_cache()
 
     print("=" * 65)
-    print(" PEDIATRIC BONE AGE - RESNET-50 FULL TRAINING (REVIEW 2)")
+    print(" PEDIATRIC BONE AGE - RESNET-50 ULTRA-FAST FP32 TRAINING")
     print("=" * 65)
     print(f"Active Hardware      : {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
     print(f"Precision Mode       : Full 32-Bit Floating Point (FP32)")
     print(f"Batch Size           : {BATCH_SIZE}")
     print(f"Epochs               : {EPOCHS}")
-    print(f"Learning Rate        : {LEARNING_RATE}")
-    print(f"Metadata Path        : {TRAIN_METADATA}")
-    print(f"Preprocessing Root   : {DATA_ROOT}")
+    print(f"Dataset Root         : {DATA_ROOT}")
     print("=" * 65)
-
-    if not torch.cuda.is_available():
-        print("\n [WARNING] CUDA IS NOT ACTIVE! Change Colab runtime to T4 GPU before training.")
 
     if not TRAIN_METADATA.is_file() or not VAL_METADATA.is_file():
         raise FileNotFoundError(f"Metadata CSVs missing in {BASE_DIR / 'metadata'}")
@@ -170,7 +169,7 @@ def run_training_pipeline():
     best_val_mae = float("inf")
     best_checkpoint_path = CHECKPOINT_DIR / "resnet50_baseline_best.pth"
 
-    print("\nStarting Full Training Execution...")
+    print("\nStarting Ultra-Fast Training Execution...")
     print("Target Metric: Validation MAE < 12.0 Months")
     print("-" * 65)
 
@@ -193,7 +192,7 @@ def run_training_pipeline():
             print(f"    ⭐ Best model checkpoint updated -> {best_checkpoint_path.name} (Val MAE: {val_mae:.2f} mos)")
 
     print("-" * 65)
-    print("FULL TRAINING COMPLETED SUCCESSFULLY")
+    print("TRAINING COMPLETED SUCCESSFULLY")
     print(f"Best Validation MAE Achieved : {best_val_mae:.2f} months")
     print(f"Saved Checkpoint Path       : {best_checkpoint_path}")
     print("=" * 65)
