@@ -9,6 +9,9 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
+# Enable CuDNN auto-tuner for maximum GPU speed on fixed image dimensions
+torch.backends.cudnn.benchmark = True
+
 BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
@@ -29,8 +32,8 @@ DATA_ROOT = Path(os.environ.get("RSNA_DATA_ROOT", DEFAULT_PREPROCESSING_DIR))
 CHECKPOINT_DIR = BASE_DIR / "checkpoints"
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
-# FULL PRECISION (FP32) GPU CONFIGURATION
-BATCH_SIZE = 32
+# OPTIMIZED FP32 GPU CONFIGURATION
+BATCH_SIZE = 64         # Doubled for full T4 GPU utilization
 EPOCHS = 10
 LEARNING_RATE = 1e-4
 NUM_WORKERS = 2
@@ -74,8 +77,8 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch):
 
         running_loss += loss.item() * images.size(0)
 
-        # Print progress every 100 batches
-        if (batch_idx + 1) % 100 == 0 or (batch_idx + 1) == total_batches:
+        # Print progress every 50 batches for rapid feedback (~15s intervals)
+        if (batch_idx + 1) % 50 == 0 or (batch_idx + 1) == total_batches:
             current_mae = loss.item()
             print(f"  [Epoch {epoch:02d}/{EPOCHS:02d}] Batch {batch_idx + 1:03d}/{total_batches:03d} | Batch Loss: {current_mae:.2f} mos")
 
