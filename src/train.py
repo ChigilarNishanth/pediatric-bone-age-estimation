@@ -3,13 +3,15 @@ import random
 import sys
 from pathlib import Path
 
+# Prevent CUDA memory fragmentation
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-# Enable CuDNN auto-tuner for maximum GPU speed on fixed image dimensions
 torch.backends.cudnn.benchmark = True
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -32,8 +34,8 @@ DATA_ROOT = Path(os.environ.get("RSNA_DATA_ROOT", DEFAULT_PREPROCESSING_DIR))
 CHECKPOINT_DIR = BASE_DIR / "checkpoints"
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
-# OPTIMIZED FP32 GPU CONFIGURATION
-BATCH_SIZE = 64         # Doubled for full T4 GPU utilization
+# OPTIMIZED FP32 GPU CONFIGURATION (T4 SAFE)
+BATCH_SIZE = 32         # Fits safely within 15 GB T4 VRAM
 EPOCHS = 10
 LEARNING_RATE = 1e-4
 NUM_WORKERS = 2
@@ -77,7 +79,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch):
 
         running_loss += loss.item() * images.size(0)
 
-        # Print progress every 50 batches for rapid feedback (~15s intervals)
+        # Progress update every 50 batches
         if (batch_idx + 1) % 50 == 0 or (batch_idx + 1) == total_batches:
             current_mae = loss.item()
             print(f"  [Epoch {epoch:02d}/{EPOCHS:02d}] Batch {batch_idx + 1:03d}/{total_batches:03d} | Batch Loss: {current_mae:.2f} mos")
@@ -113,6 +115,9 @@ def evaluate(model, dataloader, criterion, device):
 
 def run_training_pipeline():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     print("=" * 65)
     print(" PEDIATRIC BONE AGE - RESNET-50 FULL TRAINING (REVIEW 2)")
