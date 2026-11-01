@@ -8,4 +8,4 @@
 !metadata/validation_metadata.csv
 # Python cache
 **/__pycache__/
-*.pyc
+*.pyccheckpoints/*.pth
